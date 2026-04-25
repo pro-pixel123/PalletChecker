@@ -1,5 +1,5 @@
 streamlit
-opencv-python
 numpy
 pillow
-tensorflow
+opencv-python-headless==4.9.0.80
+tensorflow-cpu==2.15.0
