@@ -569,12 +569,18 @@ def run_ai_check(raw_bgr: np.ndarray, camera_status: str = "OK") -> dict:
         # ─────────────────────────────────────────────
         # 1. LOAD MODEL
         # ─────────────────────────────────────────────
-        if "keras_model" not in globals():
-            keras_model = tf.keras.models.load_model(
+        import streamlit as st
+
+        @st.cache_resource
+        def load_model_cached():
+            model = tf.keras.models.load_model(
                 MODEL_PATH,
                 compile=False
             )
             log("▶ AI model loaded")
+            return model
+
+        keras_model = load_model_cached()
 
         # ─────────────────────────────────────────────
         # 2. ADAPTIVE THRESHOLD
