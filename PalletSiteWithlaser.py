@@ -541,126 +541,130 @@ def _build_defect_heatmap(raw_bgr: np.ndarray, mask: np.ndarray, border_margin: 
 
 def run_ai_check(raw_bgr: np.ndarray, camera_status: str = "OK") -> dict:
 
-    import cv2
-    import numpy as np
-    from tensorflow.keras.models import load_model
+        import cv2
+        import numpy as np
+        import tensorflow as tf
+        from tensorflow.keras.models import load_model
 
-    global keras_model
+        global keras_model
 
-    BORDER_MARGIN = 25
+        BORDER_MARGIN = 25
 
-    camera_status = camera_status.upper()
+        camera_status = camera_status.upper()
 
-    # ─────────────────────────────────────────────
-    # 0. CAMERA GATE
-    # ─────────────────────────────────────────────
-    if camera_status == "OK":
-        log("▶ AI skipped (camera OK)")
+        # ─────────────────────────────────────────────
+        # 0. CAMERA GATE
+        # ─────────────────────────────────────────────
+        if camera_status == "OK":
+            log("▶ AI skipped (camera OK)")
+
+            return {
+                "label": "PASS",
+                "status": "OK",
+                "confidence": 99.0,
+                "heatmap": cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2RGB),
+                "ai_skipped": True
+            }
+
+        # ─────────────────────────────────────────────
+        # 1. LOAD MODEL
+        # ─────────────────────────────────────────────
+        if "keras_model" not in globals():
+            keras_model = tf.keras.models.load_model(
+                MODEL_PATH,
+                compile=False
+            )
+            log("▶ AI model loaded")
+
+        # ─────────────────────────────────────────────
+        # 2. ADAPTIVE THRESHOLD
+        # ─────────────────────────────────────────────
+        conf_thresh = 0.06 if camera_status == "FAIL" else 0.10
+
+        # ─────────────────────────────────────────────
+        # 3. PREPROCESS
+        # ─────────────────────────────────────────────
+        raw_bgr = cv2.resize(raw_bgr, (640, 480))
+
+        gray = cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2GRAY)
+        inp = gray.astype(np.float32) / 255.0
+        inp = np.expand_dims(inp, (0, -1))
+
+        pred = keras_model.predict(inp, verbose=0)[0]
+
+        # ─────────────────────────────────────────────
+        # 4. SEGMENTATION
+        # ─────────────────────────────────────────────
+        if len(pred.shape) >= 2:
+
+            pred_2d = pred[:, :, 0] if len(pred.shape) == 3 else pred
+            pred_2d = cv2.resize(pred_2d, (640, 480))
+
+            # ── BORDER LAW (critical fix) ──
+            pred_2d[:BORDER_MARGIN, :] = 0
+            pred_2d[-BORDER_MARGIN:, :] = 0
+            pred_2d[:, :BORDER_MARGIN] = 0
+            pred_2d[:, -BORDER_MARGIN:] = 0
+
+            mask = (pred_2d > conf_thresh).astype(np.uint8)
+
+            num_labels, labels = cv2.connectedComponents(mask)
+
+            regions = 0
+            ratio = float(np.sum(mask)) / (640 * 480)
+
+            for lbl in range(1, num_labels):
+                comp = labels == lbl
+                if np.sum(comp) < 20:
+                    continue
+
+                score = float(np.mean(pred_2d[comp]))
+
+                if score < conf_thresh:
+                    continue
+
+                regions += 1
+
+            overlay = _build_defect_heatmap(raw_bgr, mask, BORDER_MARGIN)
+
+        # ─────────────────────────────────────────────
+        # 5. CLASSIFICATION FALLBACK
+        # ─────────────────────────────────────────────
+        else:
+            score = float(pred.flatten()[0])
+            regions = int(score > conf_thresh)
+            ratio = score
+            overlay = raw_bgr.copy()
+
+        # ─────────────────────────────────────────────
+        # 6. DECISION LOGIC
+        # ─────────────────────────────────────────────
+        if camera_status == "FAIL":
+            status, label = ("FAIL", "CRACK DETECTED") if regions else ("WARN", "SUSPICIOUS")
+        else:
+            is_defect = (regions >= 1)
+
+            if is_defect:
+                status = "FAIL"
+                label = "CRACK DETECTED"
+            else:
+                status = "OK"
+                label = "PASS"
+
+        confidence = round((1.0 - ratio) * 100, 1)
+
+        log(f"▶ FINAL → {label} | conf={confidence}% | regions={regions}")
 
         return {
-            "label": "PASS",
-            "status": "OK",
-            "confidence": 99.0,
-            "heatmap": cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2RGB),
-            "ai_skipped": True
+            "label": label,
+            "status": status,
+            "confidence": confidence,
+            "heatmap": cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
+            "camera_status": camera_status,
+            "regions": regions,
+            "ai_ratio": ratio,
+            "ai_skipped": False
         }
-
-    # ─────────────────────────────────────────────
-    # 1. LOAD MODEL
-    # ─────────────────────────────────────────────
-    if "keras_model" not in globals():
-        keras_model = load_model(MODEL_PATH)
-        log("▶ AI model loaded")
-
-    # ─────────────────────────────────────────────
-    # 2. ADAPTIVE THRESHOLD
-    # ─────────────────────────────────────────────
-    conf_thresh = 0.06 if camera_status == "FAIL" else 0.10
-
-    # ─────────────────────────────────────────────
-    # 3. PREPROCESS
-    # ─────────────────────────────────────────────
-    raw_bgr = cv2.resize(raw_bgr, (640, 480))
-
-    gray = cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2GRAY)
-    inp = gray.astype(np.float32) / 255.0
-    inp = np.expand_dims(inp, (0, -1))
-
-    pred = keras_model.predict(inp, verbose=0)[0]
-
-    # ─────────────────────────────────────────────
-    # 4. SEGMENTATION
-    # ─────────────────────────────────────────────
-    if len(pred.shape) >= 2:
-
-        pred_2d = pred[:, :, 0] if len(pred.shape) == 3 else pred
-        pred_2d = cv2.resize(pred_2d, (640, 480))
-
-        # ── BORDER LAW (critical fix) ──
-        pred_2d[:BORDER_MARGIN, :] = 0
-        pred_2d[-BORDER_MARGIN:, :] = 0
-        pred_2d[:, :BORDER_MARGIN] = 0
-        pred_2d[:, -BORDER_MARGIN:] = 0
-
-        mask = (pred_2d > conf_thresh).astype(np.uint8)
-
-        num_labels, labels = cv2.connectedComponents(mask)
-
-        regions = 0
-        ratio = float(np.sum(mask)) / (640 * 480)
-
-        for lbl in range(1, num_labels):
-            comp = labels == lbl
-            if np.sum(comp) < 20:
-                continue
-
-            score = float(np.mean(pred_2d[comp]))
-
-            if score < conf_thresh:
-                continue
-
-            regions += 1
-
-        overlay = _build_defect_heatmap(raw_bgr, mask, BORDER_MARGIN)
-
-    # ─────────────────────────────────────────────
-    # 5. CLASSIFICATION FALLBACK
-    # ─────────────────────────────────────────────
-    else:
-        score = float(pred.flatten()[0])
-        regions = int(score > conf_thresh)
-        ratio = score
-        overlay = raw_bgr.copy()
-
-    # ─────────────────────────────────────────────
-    # 6. DECISION LOGIC
-    # ─────────────────────────────────────────────
-    if camera_status == "FAIL":
-        status, label = ("FAIL", "CRACK DETECTED") if regions else ("WARN", "SUSPICIOUS")
-    else:
-        is_defect = (regions >= 1)
-
-        if is_defect:
-            status = "FAIL"
-            label = "CRACK DETECTED"
-        else:
-            status = "OK"
-            label = "PASS"
-
-    confidence = round((1.0 - ratio) * 100, 1)
-
-    log(f"▶ FINAL → {label} | conf={confidence}% | regions={regions}")
-
-    return {
-        "label": label,
-        "status": status,
-        "confidence": confidence,
-        "heatmap": cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
-        "camera_status": camera_status,
-        "regions": regions,
-        "ai_ratio": ratio,
-        "ai_skipped": False
-    }
 
 def run_load_check(ok_max: float, warn_max: float) -> dict:
     """
