@@ -19,7 +19,7 @@ import os, sys
 print("WORKING DIR:", os.getcwd())
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IDEAL_IMAGE_PATH = os.path.join(BASE_DIR, "ideal.jpeg")
-MODEL_PATH = os.path.join(BASE_DIR, "pallet_crack_model.h5")
+MODEL_PATH = os.path.join(BASE_DIR, "pallet_crack_model.keras")
 SAMPLE_FOLDER    = os.path.join(BASE_DIR, "sample_images")
 
 def resource_path(relative_path):
